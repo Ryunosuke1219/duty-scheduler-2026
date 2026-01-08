@@ -290,7 +290,20 @@ class DutyScheduler:
         if '加藤' in self.doctors:
             model.Add(sum(x['加藤'][s] for s in self.shift_cols) <= 1)
 
-        # 5. G1が当直するシフト(日直以外)にはG0からOC
+        # 5.1 G0の最低負荷: Total (Duty + OC) >= 2（小波津は例外）
+        for doc in self.g0:
+            if doc == '小波津':
+                continue
+            duty_vars = [x[doc][s] for s in self.shift_cols]
+            oc_vars = [oc[doc][s] for s in self.shift_cols]
+            model.Add(sum(duty_vars) + sum(oc_vars) >= 2)
+
+        # 5a. 日直シフトにはOC不要（G0とG1が両方勤務するため）
+        for shift in nichoku_shifts:
+            for doc in self.g0:
+                model.Add(oc[doc][shift] == 0)
+
+        # 5b. G1が当直するシフト(日直以外)にはG0からOC
         # ※事前割り当て済みOCがあるシフトはスキップ
         for shift in other_shifts:
             if shift in self.pre_oc:
@@ -317,6 +330,21 @@ class DutyScheduler:
         for doc in self.g0:
             for shift in self.shift_cols:
                 model.Add(x[doc][shift] + oc[doc][shift] <= 1)
+
+        # 7. 同日の日直と当直OCは重複不可
+        # 日直(-1)を担当した医師は、同日の当直(-2)のOCに入れない
+        for doc in self.g0:
+            for shift1 in nichoku_shifts:  # -1 シフト
+                day1 = self.shift_day.get(shift1)
+                if day1 is None:
+                    continue
+                # 同日の-2シフトを探す
+                for shift2 in other_shifts:
+                    day2 = self.shift_day.get(shift2)
+                    sub2 = self.shift_sub.get(shift2)
+                    if day2 == day1 and sub2 == 2:  # 同日の当直(-2)
+                        # 日直に入ったらその日の当直OCには入れない
+                        model.Add(x[doc][shift1] + oc[doc][shift2] <= 1)
 
         # === ソフト制約 (目的関数) ===
         penalties = []
@@ -373,10 +401,11 @@ class DutyScheduler:
 
             penalties.append(both_sun_hol * 200)
 
-        # ペナルティ5: 勤務間隔が短い場合
+        # ペナルティ5: 勤務間隔が短い場合（当直とOC両方を考慮）
         sorted_shifts = sorted(self.shift_cols,
                                key=lambda s: (self.shift_day.get(s, 0),
                                              self.shift_sub.get(s, 0)))
+
         for doc in self.doctors:
             for i, s1 in enumerate(sorted_shifts):
                 for s2 in sorted_shifts[i+1:]:
@@ -384,12 +413,42 @@ class DutyScheduler:
                     day2 = self.shift_day.get(s2, 0)
                     gap = day2 - day1
                     if gap < 4 and gap > 0:
-                        # 両方に割り当てられたらペナルティ
-                        both_assigned = model.NewBoolVar(f'gap_{doc}_{s1}_{s2}')
-                        model.AddBoolAnd([x[doc][s1], x[doc][s2]]).OnlyEnforceIf(both_assigned)
-                        model.AddBoolOr([x[doc][s1].Not(), x[doc][s2].Not()]).OnlyEnforceIf(both_assigned.Not())
-                        penalty_value = (4 - gap) * 10
-                        penalties.append(both_assigned * penalty_value)
+                        penalty_value = (4 - gap) * 30  # 重みを増加
+
+                        if doc in self.g0:
+                            # G0: 当直またはOCの組み合わせ全てをチェック
+                            # work1 = 当直 or OC on s1
+                            work1 = model.NewBoolVar(f'work1_{doc}_{s1}')
+                            model.AddMaxEquality(work1, [x[doc][s1], oc[doc][s1]])
+
+                            # work2 = 当直 or OC on s2
+                            work2 = model.NewBoolVar(f'work2_{doc}_{s2}')
+                            model.AddMaxEquality(work2, [x[doc][s2], oc[doc][s2]])
+
+                            # 両方勤務ならペナルティ
+                            both_work = model.NewBoolVar(f'gap_work_{doc}_{s1}_{s2}')
+                            model.AddBoolAnd([work1, work2]).OnlyEnforceIf(both_work)
+                            model.AddBoolOr([work1.Not(), work2.Not()]).OnlyEnforceIf(both_work.Not())
+                            penalties.append(both_work * penalty_value)
+                        else:
+                            # G1: 当直のみチェック
+                            both_assigned = model.NewBoolVar(f'gap_{doc}_{s1}_{s2}')
+                            model.AddBoolAnd([x[doc][s1], x[doc][s2]]).OnlyEnforceIf(both_assigned)
+                            model.AddBoolOr([x[doc][s1].Not(), x[doc][s2].Not()]).OnlyEnforceIf(both_assigned.Not())
+                            penalties.append(both_assigned * penalty_value)
+
+        # ペナルティ6: G0の総負荷（当直+OC）のバランス
+        for doc in self.g0:
+            if doc == '小波津':
+                continue  # 小波津は特別制約があるのでスキップ
+            total_work = model.NewIntVar(0, 20, f'total_work_{doc}')
+            model.Add(total_work == weekday_count[doc] + weekend_count[doc] + oc_count[doc])
+            # 目標: 総負荷3～4回
+            dev_total = model.NewIntVar(0, 10, f'dev_total_{doc}')
+            # 3.5からの乖離をペナルティ（3か4が理想）
+            model.Add(dev_total >= total_work - 4)
+            model.Add(dev_total >= 3 - total_work)
+            penalties.append(dev_total * 150)  # 高い重み
 
         # 目的関数: ペナルティの合計を最小化
         model.Minimize(sum(penalties))
