@@ -269,15 +269,26 @@ class DutyScheduler:
         for doc in self.doctors:
             model.Add(sum(x[doc][s] for s in self.sunday_holiday_nichoku) <= 1)
 
-        # 5. 個別制約: 小波津は日直1回のみ、OC0回
+        # 4.5 公平性のためのハード制約
+        # 当直合計は最大2回まで（加藤は可用性が低いので例外）
+        for doc in self.doctors:
+            if doc == '加藤':
+                continue  # 加藤は1回でOK
+            total_shifts = [x[doc][s] for s in self.shift_cols]
+            model.Add(sum(total_shifts) <= 2)
+
+        # 5. 個別制約
+        # 小波津: 日直1回のみ、OC0回
         if '小波津' in self.doctors:
-            # 日直(-1シフト)のみ1回、それ以外は0回
             model.Add(sum(x['小波津'][s] for s in nichoku_shifts) <= 1)
             model.Add(sum(x['小波津'][s] for s in other_shifts) == 0)
-            # OC禁止
             if '小波津' in self.g0:
                 for shift in self.shift_cols:
                     model.Add(oc['小波津'][shift] == 0)
+
+        # 加藤: 当直1回まで（家庭の事情）
+        if '加藤' in self.doctors:
+            model.Add(sum(x['加藤'][s] for s in self.shift_cols) <= 1)
 
         # 5. G1が当直するシフト(日直以外)にはG0からOC
         # ※事前割り当て済みOCがあるシフトはスキップ
