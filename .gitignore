@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# Output files
+*_schedule.xlsx
+*_schedule_annotated.csv
+*_schedule_calendar.xlsx
+*_test*.csv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sample data (keep structure but not actual data)
+sample/
