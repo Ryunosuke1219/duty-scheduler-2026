@@ -6,6 +6,7 @@ __pycache__/
 .Python
 venv/
 ENV/
+python/
 
 # Output files
 *_schedule.xlsx

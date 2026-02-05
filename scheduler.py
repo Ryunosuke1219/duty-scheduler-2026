@@ -11,6 +11,7 @@ OR-Tools CP-SAT Solverを使用した最適化アルゴリズム
 import sys
 import re
 import datetime
+import io
 from collections import defaultdict
 from pathlib import Path
 
@@ -498,11 +499,8 @@ class DutyScheduler:
 
         return result
 
-    def generate_output(self, result: dict, output_prefix: str = None):
-        """結果をCSV/Excelに出力"""
-        if output_prefix is None:
-            output_prefix = f"{self.year}_{self.month}月_schedule"
-
+    def _build_dataframes(self, result: dict) -> tuple:
+        """結果からDataFrameを組み立てる（共通処理）"""
         # Schedule DataFrame
         rows = []
         for shift in self.shift_cols:
@@ -531,14 +529,7 @@ class DutyScheduler:
             })
         summary_df = pd.DataFrame(summary_rows)
 
-        # Excel出力
-        excel_path = f"{output_prefix}.xlsx"
-        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            schedule_df.to_excel(writer, index=False, sheet_name='Schedule')
-            summary_df.to_excel(writer, index=False, sheet_name='Summary')
-        print(f"Excel出力: {excel_path}")
-
-        # 元CSVに割り当て結果を書き込み
+        # Annotated DataFrame
         df_annot = self.df_raw.copy()
         for shift, doctors in result['duty'].items():
             for doc in doctors:
@@ -549,6 +540,23 @@ class DutyScheduler:
             if doc in df_annot['Name'].values:
                 df_annot.loc[df_annot['Name'] == doc, shift] = 4  # OC=4
 
+        return schedule_df, summary_df, df_annot
+
+    def generate_output(self, result: dict, output_prefix: str = None):
+        """結果をCSV/Excelに出力"""
+        if output_prefix is None:
+            output_prefix = f"{self.year}_{self.month}月_schedule"
+
+        schedule_df, summary_df, df_annot = self._build_dataframes(result)
+
+        # Excel出力
+        excel_path = f"{output_prefix}.xlsx"
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            schedule_df.to_excel(writer, index=False, sheet_name='Schedule')
+            summary_df.to_excel(writer, index=False, sheet_name='Summary')
+        print(f"Excel出力: {excel_path}")
+
+        # 元CSVに割り当て結果を書き込み
         csv_path = f"{output_prefix}_annotated.csv"
         df_annot.to_csv(csv_path, index=False, encoding='cp932')
         print(f"CSV出力: {csv_path}")
@@ -562,7 +570,42 @@ class DutyScheduler:
 
         return schedule_df, summary_df
 
-    def _generate_calendar(self, result: dict, output_path: str):
+    def generate_output_bytes(self, result: dict) -> dict:
+        """結果をBytesIOで返す（Webアプリ用）
+
+        Returns:
+            dict: {
+                'excel': BytesIO (スケジュール＋サマリー),
+                'csv': BytesIO (アノテーション付きCSV),
+                'calendar': BytesIO (カレンダー形式Excel),
+                'summary_df': DataFrame (サマリー表示用)
+            }
+        """
+        schedule_df, summary_df, df_annot = self._build_dataframes(result)
+
+        # Excel (Schedule + Summary)
+        excel_buf = io.BytesIO()
+        with pd.ExcelWriter(excel_buf, engine='openpyxl') as writer:
+            schedule_df.to_excel(writer, index=False, sheet_name='Schedule')
+            summary_df.to_excel(writer, index=False, sheet_name='Summary')
+        excel_buf.seek(0)
+
+        # Annotated CSV
+        csv_buf = io.BytesIO()
+        df_annot.to_csv(csv_buf, index=False, encoding='cp932')
+        csv_buf.seek(0)
+
+        # Calendar Excel
+        calendar_buf = self._generate_calendar(result, output_path=None)
+
+        return {
+            'excel': excel_buf,
+            'csv': csv_buf,
+            'calendar': calendar_buf,
+            'summary_df': summary_df
+        }
+
+    def _generate_calendar(self, result: dict, output_path: str = None):
         """カレンダー形式のExcel出力"""
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -649,8 +692,15 @@ class DutyScheduler:
                         pass
                 day += 1
 
-        wb.save(output_path)
-        print(f"カレンダー出力: {output_path}")
+        # ファイルまたはBytesIOに出力
+        if output_path is None:
+            buf = io.BytesIO()
+            wb.save(buf)
+            buf.seek(0)
+            return buf
+        else:
+            wb.save(output_path)
+            print(f"カレンダー出力: {output_path}")
 
 
 def main():
