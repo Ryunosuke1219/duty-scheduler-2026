@@ -26,3 +26,6 @@ Thumbs.db
 
 # Sample data (keep structure but not actual data)
 sample/
+
+# Distribution
+dist/
